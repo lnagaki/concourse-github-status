@@ -5,7 +5,7 @@ import json
 import requests
 import subprocess
 from requests.auth import HTTPBasicAuth
-from dataclasses import dataclass
+from dataclasses import dataclass, asdict
 from pathlib import Path
 
 # BUILD_ID = os.environ['BUILD_ID']
@@ -25,7 +25,7 @@ class Metadata:
     def from_env(cls):
         return cls(**{
             name: os.environ[name.upper()]
-            for name, field in cls.__dataclass_params__.items()
+            for name, field in cls.__dataclass_fields__.items()
         })
 
 
@@ -58,13 +58,15 @@ class OutParams:
 
     @classmethod
     def from_dict(cls, d, metadata=Metadata.from_env()):
+        description = d.get('descripion', '')
         description_path = d.get('description_path')
-        descption = d.get('descripion') or Path(description_path).read_text()
+        if description_path:
+            description += Path(description_path).read_text()
         default_target_url = f'{metadata.atc_external_url}/builds/{metadata.build_id}'
         return cls(
-            commit=d['commit'],
+            commit=get_commit_sha(d['commit']),
             state=d['state'],
-            descption=descption,
+            description=description,
             target_url=d.get('target_url', default_target_url),
         )
 
@@ -80,15 +82,24 @@ class GithubAPI(requests.Session):
         self.token = token
 
     def set_status(self, commit_sha, state, description, target_url):
-        url = f'{self.endpoint}/repos/{self.owner}/{self.repo}/statuses/{commit_sha}'
+        url = f'{self.endpoint}/repos/{self.owner}/{self.repository}/statuses/{commit_sha}'
         json_data = {
             'state': state,
             'target_url': target_url
         }
+        if description:
+            json_data['description'] = description
         auth = HTTPBasicAuth(self.owner, self.token)
         resp = self.post(url, json=json_data, auth=auth)
         resp.raise_for_status()
         return resp
+
+
+@dataclass
+class Output:
+    sha: str
+    state: str
+    status_id: str
 
 
 def get_commit_sha(sha_or_repo):
@@ -103,8 +114,10 @@ def get_commit_sha(sha_or_repo):
 
 def main_in():
     print('stdin:', sys.stdin.read())
-    print('argv', sys.argv)
+    print('argv:', sys.argv)
     print('env:', os.environ)
+    mount_proc = subprocess.run(['mount'], capture_output=True, check=True)
+    print('mounts:\n', mount_proc.stdout)
     raise NotImplementedError
 
 
@@ -115,10 +128,16 @@ def main_out():
     source = Source.from_dict(input_data['source'])
     params = OutParams.from_dict(input_data['params'])
 
-    api = GithubAPI(source.owner, source.epository, source.endpoint)
-    resp = api.set_status(params.commit, params.state, params.descption,
+    api = GithubAPI(source.owner, source.repository, source.endpoint)
+    resp = api.set_status(params.commit, params.state, params.description,
                           params.target_url)
-    print(resp.json()['id'])
+
+    output = Output(
+        sha=params.commit,
+        state=params.state,
+        status_id=resp.json()['id'],
+    )
+    json.dump(asdict(output), sys.stdout)
 
 
 def main_check():
