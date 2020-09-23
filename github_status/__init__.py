@@ -11,6 +11,9 @@ import logging
 from pprint import pformat
 from dataclasses import dataclass, asdict
 from pathlib import Path
+from typing import (
+    Optional,
+)
 import http.client
 
 
@@ -40,13 +43,14 @@ def stdin():
 
 
 class BuildEnvironment:
+    """Get details about the concourse build environment"""
     ENV_VARS = (
-        'build_id',
-        'build_name',
-        'build_job_name',
-        'build_pipeline_name',
-        'build_team_name',
-        'atc_external_url',
+        'BUILD_ID',
+        'BUILD_NAME',
+        'BUILD_JOB_NAME',
+        'BUILD_PIPELINE_NAME',
+        'BUILD_TEAM_NAME',
+        'ATC_EXTERNAL_URL',
     )
 
     @property
@@ -56,10 +60,20 @@ class BuildEnvironment:
     @property
     @fn.lru_cache
     def input_data(self):
-        return json.loads(stdin())
+        d = json.loads(stdin())
+        logger.debug('input data: %s', d)
+        return d
+
+    @property
+    def params(self):
+        return self.input_data.get('params', {})
+
+    @property
+    def source(self):
+        return Source.from_dict(self.input_data['source'])
 
     def __getattr__(self, attr):
-        if attr in self.ENV_VARS:
+        if attr.upper() in self.ENV_VARS:
             return os.environ.get(attr.upper(), '')
         raise AttributeError(f'No such attribute: {attr}')
 
@@ -88,6 +102,7 @@ class Source:
 
 @dataclass
 class OutParams:
+    """Parsed parameters for the `out` operation"""
     commit: str
     state: str
     description: str
@@ -95,18 +110,17 @@ class OutParams:
 
     @classmethod
     def from_build(cls, env: BuildEnvironment):
-        params = env.input_data['params']
         is_pipeline_build = env.build_pipeline_name and env.build_job_name
 
         if is_pipeline_build:
-            default_description = f'{env.build_pipeline_name}/{env.build_job_name}'
+            default_description = f'Concourse build for {env.build_pipeline_name}/{env.build_job_name}'
         else:
-            default_description = f'ad hoc build #{env.build_id}'
+            default_description = f'ad hoc Concourse build #{env.build_id}'
 
-        if description_path := params.get('description_path'):
+        if description_path := env.params.get('description_path'):
             description = Path(description_path).read_text()
         else:
-            description = params.get('descripion', default_description)
+            description = env.params.get('descripion', default_description)
 
         default_target_url = f'{env.atc_external_url}'
         if is_pipeline_build:
@@ -116,35 +130,44 @@ class OutParams:
         default_target_url += f'/builds/{env.build_id}'
 
         return cls(
-            commit=get_commit_sha(env.build_dir, params['commit']),
-            state=params['state'],
+            commit=get_commit_sha(env.build_dir, env.params['commit']),
+            state=env.params['state'],
             description=description,
-            target_url=params.get('target_url', default_target_url),
+            target_url=env.params.get('target_url', default_target_url),
         )
+
+
+@dataclass
+class InParams:
+    """Parsed parameters for the `in` operation"""
+    commit_ref: str = 'master'
+    output_path: str = 'github-build-status.json'
+
+    @classmethod
+    def from_build(cls, env: BuildEnvironment):
+        return cls(**env.params)
 
 
 class GithubAPI(requests.Session):
     DEFAULT_ENDPOINT = 'https://api.github.com'
 
-    def __init__(self, owner, repository, token, endpoint=DEFAULT_ENDPOINT, **kwargs):
+    def __init__(self, token, endpoint=DEFAULT_ENDPOINT, **kwargs):
         super().__init__(**kwargs)
-        self.owner = owner
-        self.repository = repository
         self.endpoint = endpoint
         self.token = token
         self.headers['Authorization'] = f'token {token}'
 
-    def status_url(self, commit_ref=None):
-        url = (f'{self.endpoint}/repos'
-               f'/{self.owner}/{self.repository}/statuses')
-        if commit_ref is not None:
-            url += f'/{commit_ref}'
-        return url
+    def get_status(self, owner, repo, commit_ref):
+        url = (f'{self.endpoint}/repos/{owner}/{repo}'
+               f'/commits/{commit_ref}/status')
+        resp = self.get(url)
+        resp.raise_for_status()
+        return resp
 
-    def get_status(self, commit_sha, context=None):
-        pass
+    def set_status(self, *, owner, repo, commit_sha, state, description, target_url, context='default'):
+        url = (f'{self.endpoint}/repos/{owner}/{repo}'
+               f'/statuses/{commit_sha}')
 
-    def set_status(self, commit_sha, state, description, target_url, context='default'):
         json_data = {
             'state': state,
             'target_url': target_url,
@@ -152,9 +175,17 @@ class GithubAPI(requests.Session):
         }
         if description:
             json_data['description'] = description
-        resp = self.post(self.status_url(commit_sha), json=json_data)
+        resp = self.post(url, json=json_data)
         resp.raise_for_status()
         return resp
+
+
+def status_context(env: BuildEnvironment):
+    is_pipeline_build = env.build_pipeline_name and env.build_job_name
+    if is_pipeline_build:
+        return f'{env.build_pipeline_name}/{env.build_job_name}'
+    else:
+        return f'adhoc/{env.build_id}'
 
 
 def get_commit_sha(base_dir, sha_or_repo):
@@ -167,47 +198,46 @@ def get_commit_sha(base_dir, sha_or_repo):
         return sha_or_repo
 
 
-def ref():
-    return int(time.time() // 120)
-
-
-def show_env():
-    if sys.stdin.isatty():
-        logger.info('stdin is a tty')
-    else:
-        logger.info(f'stdin: {stdin()}')
-    logger.info(f'\ncwd: {os.getcwd()}')
-    logger.info(f'\nargv: {sys.argv}')
-    logger.info(f'\nenv: {pformat(dict(os.environ))}')
-    try:
-        mount_proc = run(['mount'])
-    except Exception:
-        logger.info('count not run mount')
-    else:
-        logger.info(f'\nmounts:\n{mount_proc.stdout}')
-    # build_paths = list(Path(BUILD_DIR).iterdir())
-    # logger.info('\nbuild paths:', pformat(build_paths))
-    find = run(['find', '/', '-name', 'repository'], check=False)
-    logger.info(f'\nfind repository status {find.returncode}:\n{find.stdout}{find.stderr}')
-
-
 def main_in():
-    show_env()
-    input_data = json.loads(stdin())
-    output = {'version': input_data['version'], 'metadata': []}
+    build_env = BuildEnvironment()
+    params = InParams.from_build(build_env)
+
+    api = GithubAPI(build_env.source.access_token, build_env.source.endpoint)
+    resp = api.get_status(
+        owner=build_env.source.owner,
+        repo=build_env.source.repository,
+        commit_ref=params.commit_ref,
+    )
+
+    with open(params.output_path, 'w') as f:
+        f.write(resp.text)
+
+    # The outputed version cannot be the actual build status id because
+    # concourse expects the `in` version to equal the `check` version.
+    # We have no way of knowing the desired commit ref during the `check` phase
+    # so we just echo back the random id generated in the check step.
+    output = {'version': build_env.input_data['version'], 'metadata': [
+        {'name': 'state', 'value': resp.json()['state']},
+        {'name': 'sha', 'value': resp.json()['sha']},
+        {'name': 'commit_url', 'value': resp.json()['commit_url']},
+        {'name': 'total_count', 'value': str(resp.json()['total_count'])},
+    ]}
     json.dump(output, sys.stdout)
 
 
 def main_out():
-    show_env()
     build_env = BuildEnvironment()
-
-    source = Source.from_dict(build_env.input_data['source'])
     params = OutParams.from_build(build_env)
 
-    api = GithubAPI(source.owner, source.repository, source.access_token, source.endpoint)
-    resp = api.set_status(params.commit, params.state, params.description,
-                          params.target_url)
+    api = GithubAPI(build_env.source.access_token, build_env.source.endpoint)
+    resp = api.set_status(
+        owner=build_env.source.owner,
+        repo=build_env.source.repository,
+        commit_sha=params.commit,
+        state=params.state,
+        description=params.description,
+        target_url=params.target_url,
+    )
 
     output = {
         'version': {'ref': str(resp.json()['id'])},
