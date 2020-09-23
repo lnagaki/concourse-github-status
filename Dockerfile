@@ -1,4 +1,5 @@
-FROM python:3.8
+FROM python:3.8-alpine
+#FROM python:3.8
 ENTRYPOINT ["bash"]
 WORKDIR /src
 COPY . .
