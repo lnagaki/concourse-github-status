@@ -4,6 +4,7 @@ import sys
 import json
 import requests
 import subprocess
+import uuid
 from pprint import pprint
 from requests.auth import HTTPBasicAuth
 from dataclasses import dataclass, asdict
@@ -145,4 +146,5 @@ def main_out():
 
 
 def main_check():
-    pass
+    ref = uuid.uuid4()
+    json.dump({'ref': str(ref)})
