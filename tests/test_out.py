@@ -36,10 +36,6 @@ def environ(mocker):
         'ATC_EXTERNAL_URL': 'https://example.com/some/path',
     })
 
-# @pytest.fixture
-# def capture_output(mocker):
-    # yield mocker.patch('sys.stdout', StringIO())
-
 
 def test_post_build_status(input_data, environ, api_post, capsys):
     import github_status

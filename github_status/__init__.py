@@ -4,6 +4,7 @@ import sys
 import json
 import requests
 import subprocess
+from pprint import pprint
 from requests.auth import HTTPBasicAuth
 from dataclasses import dataclass, asdict
 from pathlib import Path
@@ -24,7 +25,7 @@ class Metadata:
     @classmethod
     def from_env(cls):
         return cls(**{
-            name: os.environ[name.upper()]
+            name: os.environ.get(name.upper(), '')
             for name, field in cls.__dataclass_fields__.items()
         })
 
@@ -113,11 +114,15 @@ def get_commit_sha(sha_or_repo):
 
 
 def main_in():
-    print('stdin:', sys.stdin.read())
-    print('argv:', sys.argv)
-    print('env:', os.environ)
+    if sys.stdin.isatty():
+        print('stdin is a tty')
+    else:
+        print('stdin:', sys.stdin.read())
+    print('\nargv:', sys.argv)
+    print('\nenv:', end=' ')
+    pprint(dict(os.environ))
     mount_proc = subprocess.run(['mount'], capture_output=True, check=True)
-    print('mounts:\n', mount_proc.stdout)
+    print('\nmounts:\n', str(mount_proc.stdout))
     raise NotImplementedError
 
 
