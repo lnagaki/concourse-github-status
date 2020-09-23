@@ -7,12 +7,31 @@ import requests
 import subprocess
 import uuid
 import functools as fn
+import logging
 from pprint import pformat
 from dataclasses import dataclass, asdict
 from pathlib import Path
+import http.client
 
-# BUILD_ID = os.environ['BUILD_ID']
-# DEFAULT_TARGET_URL = f'{os.environ["ATC_EXTERNAL_URL"]}/builds/{BUILD_ID}'
+
+logging.basicConfig(stream=sys.stderr, level=logging.DEBUG)
+logger = logging.getLogger(__name__)
+run = fn.partial(subprocess.run, check=True, capture_output=True, encoding='utf-8')
+
+# https://stackoverflow.com/questions/16337511/log-all-requests-from-the-python-requests-module
+httpclient_logger = logging.getLogger("http.client")
+def httpclient_logging_patch(level=logging.DEBUG):
+    """Enable HTTPConnection debug logging to the logging framework"""
+
+    def httpclient_log(*args):
+        httpclient_logger.log(level, " ".join(args))
+
+    # mask the print() built-in in the http.client module to use
+    # logging instead
+    http.client.print = httpclient_log
+    # enable debugging
+    http.client.HTTPConnection.debuglevel = 1
+httpclient_logging_patch()
 
 
 @fn.lru_cache
@@ -20,21 +39,29 @@ def stdin():
     return sys.stdin.read()
 
 
-@dataclass
-class Metadata:
-    build_id: str
-    build_name: str
-    build_job_name: str
-    build_pipeline_name: str
-    build_team_name: str
-    atc_external_url: str
+class BuildEnvironment:
+    ENV_VARS = (
+        'build_id',
+        'build_name',
+        'build_job_name',
+        'build_pipeline_name',
+        'build_team_name',
+        'atc_external_url',
+    )
 
-    @classmethod
-    def from_env(cls):
-        return cls(**{
-            name: os.environ.get(name.upper(), '')
-            for name, field in cls.__dataclass_fields__.items()
-        })
+    @property
+    def build_dir(self):
+        return sys.argv[1]
+
+    @property
+    @fn.lru_cache
+    def input_data(self):
+        return json.loads(stdin())
+
+    def __getattr__(self, attr):
+        if attr in self.ENV_VARS:
+            return os.environ.get(attr.upper(), '')
+        raise AttributeError(f'No such attribute: {attr}')
 
 
 @dataclass
@@ -44,12 +71,14 @@ class Source:
     branch: str
     context: str
     endpoint: str
+    access_token: str
 
     @classmethod
     def from_dict(cls, d):
         return cls(
             owner=d['owner'],
             repository=d['repository'],
+            access_token=d['access_token'],
             branch=d.get('branch', 'master'),
             context=d.get('context', 'default'),
             endpoint=d.get('endpoint', GithubAPI.DEFAULT_ENDPOINT),
@@ -65,31 +94,32 @@ class OutParams:
     target_url: str
 
     @classmethod
-    def from_dict(cls, d, metadata=Metadata.from_env()):
-        is_pipeline_build = metadata.build_pipeline_name and metadata.build_job_name
+    def from_build(cls, env: BuildEnvironment):
+        params = env.input_data['params']
+        is_pipeline_build = env.build_pipeline_name and env.build_job_name
 
         if is_pipeline_build:
-            default_description = f'{metadata.build_pipeline_name}/{metadata.build_job_name}'
+            default_description = f'{env.build_pipeline_name}/{env.build_job_name}'
         else:
-            default_description = f'ad hoc build #{metadata.build_id}'
+            default_description = f'ad hoc build #{env.build_id}'
 
-        if description_path := d.get('description_path'):
+        if description_path := params.get('description_path'):
             description = Path(description_path).read_text()
         else:
-            description = d.get('descripion', default_description)
+            description = params.get('descripion', default_description)
 
-        default_target_url = f'{metadata.atc_external_url}'
+        default_target_url = f'{env.atc_external_url}'
         if is_pipeline_build:
-            default_target_url += (f'/teams/{metadata.build_team_name}'
-                                   f'/pipelines/{metadata.build_pipeline_name}'
-                                   f'/jobs/{metadata.build_job_name}')
-        default_target_url += f'/builds/{metadata.build_id}'
+            default_target_url += (f'/teams/{env.build_team_name}'
+                                   f'/pipelines/{env.build_pipeline_name}'
+                                   f'/jobs/{env.build_job_name}')
+        default_target_url += f'/builds/{env.build_id}'
 
         return cls(
-            commit=get_commit_sha(d['commit']),
-            state=d['state'],
+            commit=get_commit_sha(env.build_dir, params['commit']),
+            state=params['state'],
             description=description,
-            target_url=d.get('target_url', default_target_url),
+            target_url=params.get('target_url', default_target_url),
         )
 
 
@@ -104,39 +134,31 @@ class GithubAPI(requests.Session):
         self.token = token
         self.headers['Authorization'] = f'token {token}'
 
-    def set_status(self, commit_sha, state, description, target_url):
-        url = f'{self.endpoint}/repos/{self.owner}/{self.repository}/statuses/{commit_sha}'
+    def status_url(self, commit_ref=None):
+        url = (f'{self.endpoint}/repos'
+               f'/{self.owner}/{self.repository}/statuses')
+        if commit_ref is not None:
+            url += f'/{commit_ref}'
+        return url
+
+    def get_status(self, commit_sha, context=None):
+        pass
+
+    def set_status(self, commit_sha, state, description, target_url, context='default'):
         json_data = {
             'state': state,
-            'target_url': target_url
+            'target_url': target_url,
+            'context': context,
         }
         if description:
             json_data['description'] = description
-        resp = self.post(url, json=json_data)
+        resp = self.post(self.status_url(commit_sha), json=json_data)
         resp.raise_for_status()
         return resp
 
 
-@dataclass
-class Output:
-    version: str
-    sha: str
-    state: str
-    status_id: str
-
-    def serialize(self):
-        return {
-            'version': {'ref': self.version},
-            'metadata': [
-                {'name': 'sha', 'value': self.sha},
-                {'name': 'state', 'value': self.state},
-                {'name': 'status_id', 'value': self.status_id},
-            ],
-        }
-
-
-def get_commit_sha(sha_or_repo):
-    path = Path(sha_or_repo)
+def get_commit_sha(base_dir, sha_or_repo):
+    path = Path(base_dir) / sha_or_repo
     if path.is_dir():
         return path.joinpath('.git', 'HEAD').read_text().strip()
     elif path.is_file():
@@ -150,21 +172,23 @@ def ref():
 
 
 def show_env():
-    eprint = fn.partial(print, file=sys.stderr)
     if sys.stdin.isatty():
-        eprint('stdin is a tty')
+        logger.info('stdin is a tty')
     else:
-        eprint('stdin:', stdin())
-    eprint('\ncwd:', os.getcwd())
-    eprint('\nargv:', sys.argv)
-    eprint('\nenv:', end=' ')
-    eprint(pformat(dict(os.environ)))
+        logger.info(f'stdin: {stdin()}')
+    logger.info(f'\ncwd: {os.getcwd()}')
+    logger.info(f'\nargv: {sys.argv}')
+    logger.info(f'\nenv: {pformat(dict(os.environ))}')
     try:
-        mount_proc = subprocess.run(['mount'], capture_output=True, check=True)
+        mount_proc = run(['mount'])
     except Exception:
-        eprint('count not run mount')
+        logger.info('count not run mount')
     else:
-        eprint('\nmounts:\n', str(mount_proc.stdout))
+        logger.info(f'\nmounts:\n{mount_proc.stdout}')
+    # build_paths = list(Path(BUILD_DIR).iterdir())
+    # logger.info('\nbuild paths:', pformat(build_paths))
+    find = run(['find', '/', '-name', 'repository'], check=False)
+    logger.info(f'\nfind repository status {find.returncode}:\n{find.stdout}{find.stderr}')
 
 
 def main_in():
@@ -176,34 +200,25 @@ def main_in():
 
 def main_out():
     show_env()
-    input_data = json.loads(stdin())
-    metadata = Metadata.from_env()
+    build_env = BuildEnvironment()
 
-    source = Source.from_dict(input_data['source'])
-    params = OutParams.from_dict(input_data['params'])
+    source = Source.from_dict(build_env.input_data['source'])
+    params = OutParams.from_build(build_env)
 
-    api = GithubAPI(source.owner, source.repository, source.endpoint)
+    api = GithubAPI(source.owner, source.repository, source.access_token, source.endpoint)
     resp = api.set_status(params.commit, params.state, params.description,
                           params.target_url)
 
-    # output = Output(
-    #     version=input_data['version']['ref'],
-    #     sha=params.commit,
-    #     state=params.state,
-    #     status_id=resp.json()['id'],
-    # )
-    # json.dump(asdict(output), sys.stdout)
-
     output = {
-        'version': input_data['version'],
+        'version': {'ref': str(resp.json()['id'])},
         'metadata': [
             {'name': 'sha', 'value': params.commit},
             {'name': 'state', 'value': params.state},
-            {'name': 'status_id', 'value': resp.json()['id']},
+            {'name': 'url', 'value': resp.json()['url']}
         ]
     }
     json.dump(output, sys.stdout)
 
 
 def main_check():
-    json.dump([{'ref': str(ref())}], sys.stdout)
+    json.dump([{'ref': str(uuid.uuid4())}], sys.stdout)
