@@ -123,7 +123,6 @@ def main_in():
     pprint(dict(os.environ))
     mount_proc = subprocess.run(['mount'], capture_output=True, check=True)
     print('\nmounts:\n', str(mount_proc.stdout))
-    raise NotImplementedError
 
 
 def main_out():
@@ -146,4 +145,4 @@ def main_out():
 
 
 def main_check():
-    raise NotImplementedError
+    pass
