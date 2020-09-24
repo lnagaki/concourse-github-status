@@ -22,4 +22,10 @@ setup(
     },
     dependencies=dependencies,
     install_requires=locked_dependencies,
+    extras_require={
+        'dev': [
+            'pytest',
+            'pytest-mock',
+        ]
+    }
 )
