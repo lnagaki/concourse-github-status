@@ -54,6 +54,10 @@ class BuildEnvironment:
     )
 
     @property
+    def is_pipeline_build(self):
+        return self.build_pipeline_name and self.build_job_name
+
+    @property
     def build_dir(self):
         return sys.argv[1]
 
@@ -103,16 +107,14 @@ class Source:
 @dataclass
 class OutParams:
     """Parsed parameters for the `out` operation"""
-    commit: str
     state: str
     description: str
     target_url: str
 
     @classmethod
     def from_build(cls, env: BuildEnvironment):
-        is_pipeline_build = env.build_pipeline_name and env.build_job_name
 
-        if is_pipeline_build:
+        if env.is_pipeline_build:
             default_description = f'Concourse build for {env.build_pipeline_name}/{env.build_job_name}'
         else:
             default_description = f'ad hoc Concourse build #{env.build_id}'
@@ -123,7 +125,7 @@ class OutParams:
             description = env.params.get('descripion', default_description)
 
         default_target_url = f'{env.atc_external_url}'
-        if is_pipeline_build:
+        if env.is_pipeline_build:
             default_target_url += (f'/teams/{env.build_team_name}'
                                    f'/pipelines/{env.build_pipeline_name}'
                                    f'/jobs/{env.build_job_name}')
@@ -158,13 +160,26 @@ class GithubAPI(requests.Session):
         self.headers['Authorization'] = f'token {token}'
 
     def get_status(self, owner, repo, commit_ref):
+        """Fetches the combined latest statuses per context for a reference
+        https://docs.github.com/en/rest/reference/repos#get-the-combined-status-for-a-specific-reference"""
         url = (f'{self.endpoint}/repos/{owner}/{repo}'
                f'/commits/{commit_ref}/status')
         resp = self.get(url)
         resp.raise_for_status()
         return resp
 
+    def get_statuses(self, owner, repo, commit_ref):
+        """Fetches the complgete list for build statuses for a given reference
+        https://docs.github.com/en/rest/reference/repos#list-commit-statuses-for-a-reference"""
+        url = (f'{self.endpoint}/repos/{owner}/{repo}'
+               f'/commits/{commit_ref}/statuses')
+        resp = self.get(url)
+        resp.raise_for_status()
+        return resp
+
     def set_status(self, *, owner, repo, commit_sha, state, description, target_url, context='default'):
+        """Post a new build status for the given commit
+        https://docs.github.com/en/rest/reference/repos#create-a-commit-status"""
         url = (f'{self.endpoint}/repos/{owner}/{repo}'
                f'/statuses/{commit_sha}')
 
@@ -181,8 +196,7 @@ class GithubAPI(requests.Session):
 
 
 def status_context(env: BuildEnvironment):
-    is_pipeline_build = env.build_pipeline_name and env.build_job_name
-    if is_pipeline_build:
+    if env.is_pipeline_build:
         return f'{env.build_pipeline_name}/{env.build_job_name}'
     else:
         return f'adhoc/{env.build_id}'
@@ -196,6 +210,12 @@ def get_commit_sha(base_dir, sha_or_repo):
         return path.read_text().strip()
     else:
         return sha_or_repo
+
+def last_status_id(get_resp):
+    try:
+        return str(get_resp.json()['statuses'][0]['id'])
+    except (KeyError, IndexError):
+        return 'n/a'
 
 
 def main_in():
@@ -216,7 +236,7 @@ def main_in():
     # concourse expects the `in` version to equal the `check` version.
     # We have no way of knowing the desired commit ref during the `check` phase
     # so we just echo back the random id generated in the check step.
-    output = {'version': build_env.input_data['version'], 'metadata': [
+    output = {'version': last_status_id(resp), 'metadata': [
         {'name': 'state', 'value': resp.json()['state']},
         {'name': 'sha', 'value': resp.json()['sha']},
         {'name': 'commit_url', 'value': resp.json()['commit_url']},
@@ -237,6 +257,7 @@ def main_out():
         state=params.state,
         description=params.description,
         target_url=params.target_url,
+        context=status_context(build_env),
     )
 
     output = {
@@ -251,4 +272,25 @@ def main_out():
 
 
 def main_check():
-    json.dump([{'ref': str(uuid.uuid4())}], sys.stdout)
+    # json.dump([{'ref': str(uuid.uuid4())}], sys.stdout)
+    build_env = BuildEnvironment()
+
+    api = GithubAPI(build_env.source.access_token, build_env.source.endpoint)
+    resp = api.get_statuses(
+        owner=build_env.source.owner,
+        repo=build_env.source.repository,
+        commit_ref=build_env.source.branch,
+    )
+
+    check_version = build_env.input_data.get('version', {}).get('ref')
+    versions = [str(status['id']) for status in resp.json()]
+
+    if check_version is None or check_version not in versions:
+        output = [{'ref': versions[0]}]
+    else:
+        output = []
+        for version in versions:
+            output.appendleft({'ref': version})
+        output = reversed(output)
+
+    json.dump(output, sys.stdout)
