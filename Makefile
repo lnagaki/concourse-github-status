@@ -32,7 +32,7 @@ requirements.txt: setup.py
 
 .PHONY: tag
 tag: guard-TAG ## Tag a new version. Requires TAG=x.x.x
-	sed -i "s/version=.*/version='${TAG}'/" setup.py
+	sed -i "s/version=.*/version='${TAG}',/" setup.py
 	-git commit setup.py -m 'version: ${TAG}'
 	git tag ${TAG}
 
