@@ -1,0 +1,49 @@
+---
+jobs:
+  - name: test-and-publish
+    plan:
+      - get: repo
+        trigger: true
+      - put: build-status
+        params: { state: pending, commit: repo }
+      - do:
+          - task: build
+            file: repo/ci/build-task.yaml
+            privileged: true
+          - task: unit-tests
+            file: repo/ci/test-task.yaml
+          - put: barth-tech-registry
+            params:
+              image: image/image.tar
+              username: (( registry.username ))
+              password: (( registry.password ))
+        on_failure:
+          put: build-status
+          params: { state: failure, commit: repo }
+      - put: build-status
+        params: { state: success, commit: repo }
+
+resources:
+  - name: repo
+    type: git
+    source:
+      uri: https://github.com/r-bar/concourse-github-status.git
+      branch: master
+  - name: build-status
+    type: github-status
+    source:
+      owner: r-bar
+      repository: concourse-github-status
+      access_token: {{github_access_token}}
+  - name: barth-tech-registry
+    type: registry-image
+    source:
+      repository: registry.barth.tech/library/concourse_github_status
+
+
+resource_types:
+  - name: github-status
+    type: docker-image
+    source:
+      repository: registry.barth.tech/library/github-status-resource
+      tag: latest

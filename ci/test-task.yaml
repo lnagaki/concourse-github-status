@@ -1,0 +1,13 @@
+platform: linux
+image_resource:
+  type: registry-image
+  source:
+    repository: alpine
+    tag: latest
+  run:
+    path: sh
+    args:
+      - -c
+      - |
+        echo test placeholder
+
