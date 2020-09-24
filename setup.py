@@ -11,7 +11,7 @@ with open('requirements.txt') as f:
 
 setup(
     name="concourse-github-status",
-    version="0.1",
+    version='0.3.0'
     packages=find_packages(),
     entry_points={
         "console_scripts": [
