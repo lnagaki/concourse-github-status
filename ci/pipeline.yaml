@@ -1,11 +1,22 @@
 ---
 jobs:
-  - name: build-image
+  - name: update-pipeline
     plan:
       - get: repo
         trigger: true
+
+      - set_pipeline: concourse-github-status
+        file: repo/ci/pipeline.yaml
+
+  - name: build-image
+    plan:
+      - get: repo
+        passed: [update-pipeline]
+        trigger: true
+
       - put: build-status
         params: { state: pending, commit: repo }
+
       - task: test
         on_failure: &on_failure
           put: build-status
@@ -22,15 +33,43 @@ jobs:
             path: /bin/ash
             args:
               - -c
-              - "cd repo && pip install .[dev] && pytest"
+              - >-
+                cd repo && pip install .[dev] && pytest
+
+      - task: create-tags
+        on_failure: *on_failure
+        config:
+          platform: linux
+          image_resource:
+            type: registry-image
+            source:
+              repository: alpine
+          inputs: [{name: repo}]
+          run:
+            path: /bin/ash
+            args:
+              - -c
+              - |
+                set -x
+                set -e
+                apk add git make
+                cd repo
+                make ci/tags
+
       - put: barth-tech-registry
         params:
           build: repo
+          additional_tags: repo/ci/tags
         on_failure: *on_failure
+
+      - put: build-status
+        params: { state: success, commit: repo }
+
 
 resources:
   - name: repo
     type: git
+    icon: github
     source:
       uri: https://github.com/r-bar/concourse-github-status.git
       branch: master
@@ -46,6 +85,7 @@ resources:
 
   - name: barth-tech-registry
     type: docker-image
+    icon: docker
     source:
       repository: registry.barth.tech/library/concourse_github_status
       username: ((registry.username))
