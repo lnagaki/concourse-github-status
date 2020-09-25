@@ -15,8 +15,8 @@ jobs:
           - put: barth-tech-registry
             params:
               image: image/image.tar
-              username: (( registry.username ))
-              password: (( registry.password ))
+              username: ((registry.username))
+              password: ((registry.password))
         on_failure:
           put: build-status
           params: { state: failure, commit: repo }
@@ -34,7 +34,7 @@ resources:
     source:
       owner: r-bar
       repository: concourse-github-status
-      access_token: {{github_access_token}}
+      access_token: ((github-access-token))
   - name: barth-tech-registry
     type: registry-image
     source:
@@ -45,5 +45,5 @@ resource_types:
   - name: github-status
     type: docker-image
     source:
-      repository: registry.barth.tech/library/github-status-resource
+      repository: registry.barth.tech/library/concourse_github_status
       tag: latest

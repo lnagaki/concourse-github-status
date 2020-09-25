@@ -4,10 +4,10 @@ image_resource:
   source:
     repository: alpine
     tag: latest
-  run:
-    path: sh
-    args:
-      - -c
-      - |
-        echo test placeholder
+run:
+  path: sh
+  args:
+    - -c
+    - |
+      echo test placeholder
 

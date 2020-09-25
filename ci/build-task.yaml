@@ -4,11 +4,11 @@ image_resource:
   source:
     repository: vito/oci-build-task
     tag: latest
-  params:
-    CONTEXT: repo
-  inputs:
-    - name: repo
-  outputs:
-    - name: image
-  run:
-    path: build
+params:
+  CONTEXT: repo
+inputs:
+  - name: repo
+outputs:
+  - name: image
+run:
+  path: build
