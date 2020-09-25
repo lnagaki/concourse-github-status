@@ -1,6 +1,6 @@
 REGISTRY := 'registry.barth.tech/library/concourse_github_status'
 DIRTY = $(shell git diff --quiet || echo 'dirty')
-GIT_SHORT_SHA = $(shell git rev-parse HEAD --short)
+GIT_SHORT_SHA = $(shell git rev-parse --short HEAD)
 IMAGE_VERSION_TAG = $(shell git describe --all --abbrev=6 --dirty | sed 's#^.*/##')
 SOURCE_FILES = $(shell find github_status -type f)
 

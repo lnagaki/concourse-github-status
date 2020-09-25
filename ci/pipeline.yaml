@@ -52,7 +52,7 @@ jobs:
               - |
                 set -x
                 set -e
-                apk add git make
+                apk add --no-progress git make
                 cd repo
                 make ci/tags
 
