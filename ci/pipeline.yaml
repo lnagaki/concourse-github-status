@@ -1,27 +1,40 @@
 ---
 jobs:
-  - name: test-and-publish
+  - name: build-image
     plan:
       - get: repo
         trigger: true
       - put: build-status
         params: { state: pending, commit: repo }
-      - do:
-          - task: build
-            file: repo/ci/build-task.yaml
-            privileged: true
-          - task: unit-tests
-            file: repo/ci/test-task.yaml
-          - put: barth-tech-registry
-            params:
-              image: image/image.tar
-              username: ((registry.username))
-              password: ((registry.password))
-        on_failure:
+      - task: build
+        file: repo/ci/build-task.yaml
+        privileged: true
+        on_failure: &on_failure
           put: build-status
           params: { state: failure, commit: repo }
+      - put: barth-tech-registry
+        params:
+          image: image/image.tar
+        on_failure: *on_failure
+  - name: test
+    plan:
+      - get: barth-tech-registry
+        passed: [build-image]
+        trigger: true
+      - get: repo
+        passed: [build-image]
+      - task: unit-tests
+        image: barth-tech-registry
+        config:
+          platform: linux
+          resouce_image: {repository: dummy}
+          run:
+            path: /usr/local/bin/pytest
+            args: [/src/tests]
+        on_failure: *on_failure
       - put: build-status
         params: { state: success, commit: repo }
+
 
 resources:
   - name: repo
@@ -29,16 +42,22 @@ resources:
     source:
       uri: https://github.com/r-bar/concourse-github-status.git
       branch: master
+    webhook_token: ((webhook-token))
+    check_every: 24h
+
   - name: build-status
     type: github-status
     source:
       owner: r-bar
       repository: concourse-github-status
       access_token: ((github-access-token))
+
   - name: barth-tech-registry
     type: registry-image
     source:
       repository: registry.barth.tech/library/concourse_github_status
+      username: ((registry.username))
+      password: ((registry.password))
 
 
 resource_types:
