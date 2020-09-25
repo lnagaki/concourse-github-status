@@ -18,7 +18,10 @@ def api_post(mocker):
     mock = mocker.patch('github_status.GithubAPI.post')
 
     resp_mock = mocker.Mock()
-    resp_mock.json.return_value = {'id': 'testbuildid'}
+    resp_mock.json.return_value = {
+        'id': 'testbuildid',
+        'url': 'https://github.com/r-bar/concourse-github-status/commits/abcd1234'
+    }
 
     mock.return_value = resp_mock
 
@@ -37,17 +40,23 @@ def environ(mocker):
     })
 
 
-def test_post_build_status(input_data, environ, api_post, capsys):
+@pytest.fixture
+def out_argv(mocker):
+    yield mocker.patch('sys.argv', ['/opt/resource/out', '/tmp/repo'])
+
+
+def test_post_build_status(input_data, environ, api_post, capsys, out_argv):
     import github_status
 
     input_data({
         'source': {
             'owner': 'owner',
             'repository': 'my-sweet-project',
+            'access_token': 'supersecret',
         },
         'params': {
             'state': 'success',
-            'commit': 'abcd1234'
+            'commit': 'abcd1234',
         }
     })
 
@@ -57,11 +66,9 @@ def test_post_build_status(input_data, environ, api_post, capsys):
     api_post.assert_called_once()
     assert api_post.call_args.args[0] == \
         'https://api.github.com/repos/owner/my-sweet-project/statuses/abcd1234'
-    assert api_post.call_args.kwargs['auth']
     json_data = api_post.call_args.kwargs['json']
     assert json_data['state'] == 'success'
     out_data = json.loads(captured.out)
-    assert out_data['status_id']
-    assert out_data['state']
-    assert out_data['sha']
+    assert out_data['version']['ref'] == 'testbuildid'
+    assert isinstance(out_data['metadata'], list)
 
