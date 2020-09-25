@@ -45,6 +45,7 @@ jobs:
             source:
               repository: alpine
           inputs: [{name: repo}]
+          outputs: [{name: repo}]
           run:
             path: /bin/ash
             args:
