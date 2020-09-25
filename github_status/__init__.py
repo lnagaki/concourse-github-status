@@ -22,9 +22,9 @@ logger = logging.getLogger(__name__)
 run = fn.partial(subprocess.run, check=True, capture_output=True, encoding='utf-8')
 
 # https://stackoverflow.com/questions/16337511/log-all-requests-from-the-python-requests-module
-httpclient_logger = logging.getLogger("http.client")
 def httpclient_logging_patch(level=logging.DEBUG):
     """Enable HTTPConnection debug logging to the logging framework"""
+    httpclient_logger = logging.getLogger("http.client")
 
     def httpclient_log(*args):
         httpclient_logger.log(level, " ".join(args))
@@ -34,7 +34,7 @@ def httpclient_logging_patch(level=logging.DEBUG):
     http.client.print = httpclient_log
     # enable debugging
     http.client.HTTPConnection.debuglevel = 1
-httpclient_logging_patch()
+# httpclient_logging_patch()
 
 
 @fn.lru_cache
@@ -107,6 +107,7 @@ class Source:
 @dataclass
 class OutParams:
     """Parsed parameters for the `out` operation"""
+    commit: str
     state: str
     description: str
     target_url: str
@@ -236,7 +237,7 @@ def main_in():
     # concourse expects the `in` version to equal the `check` version.
     # We have no way of knowing the desired commit ref during the `check` phase
     # so we just echo back the random id generated in the check step.
-    output = {'version': last_status_id(resp), 'metadata': [
+    output = {'version': {'ref': last_status_id(resp)}, 'metadata': [
         {'name': 'state', 'value': resp.json()['state']},
         {'name': 'sha', 'value': resp.json()['sha']},
         {'name': 'commit_url', 'value': resp.json()['commit_url']},
