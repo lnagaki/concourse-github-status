@@ -1,4 +1,3 @@
-
 # Concourse Github Status
 
 A simple [Concourse](http://concourse.ci/)
